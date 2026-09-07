@@ -1,5 +1,12 @@
 # Prerequisites
 *.d
+node_modules/
+dist/
+.venv/
+backend/.venv/
+.env
+.env.*
+!.env.example
 
 # Object files
 *.o
