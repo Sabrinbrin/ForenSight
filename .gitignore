@@ -8,6 +8,14 @@ backend/.venv/
 .env.*
 !.env.example
 
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # Object files
 *.o
 *.ko
