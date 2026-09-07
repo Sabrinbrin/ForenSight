@@ -11,6 +11,10 @@ export type ArtifactProfile = {
   signals: string[];
   tamper_signals: string[];
   strings: string[];
+  ctf_candidates: string[];
+  ctf_notes: string[];
+  ctf_scanned_bytes: number;
+  ctf_scan_scope?: "local-offline";
   case: EvidenceCase;
 };
 
@@ -25,6 +29,17 @@ export type AnalysisResult = {
   alternative_explanations: string[];
   missing_evidence: string[];
   generated_by: string;
+  evidence_basis?: EvidenceBasis[];
+};
+
+export type EvidenceBasis = {
+  event_id: string;
+  timestamp: string;
+  event_type: string;
+  object?: string | null;
+  device?: string | null;
+  source: string;
+  detail?: string | null;
 };
 
 function validResult(value: unknown, evidenceIds: Set<string>): value is AnalysisResult {
@@ -37,7 +52,8 @@ function validResult(value: unknown, evidenceIds: Set<string>): value is Analysi
     && Array.isArray(candidate.supporting_evidence)
     && Array.isArray(candidate.contradicting_evidence)
     && candidate.supporting_evidence.every((id) => typeof id === "string" && evidenceIds.has(id))
-    && candidate.contradicting_evidence.every((id) => typeof id === "string" && evidenceIds.has(id));
+    && candidate.contradicting_evidence.every((id) => typeof id === "string" && evidenceIds.has(id))
+    && (!candidate.evidence_basis || (Array.isArray(candidate.evidence_basis) && candidate.evidence_basis.every((fact) => fact && typeof fact.event_id === "string" && evidenceIds.has(fact.event_id))));
 }
 
 export async function requestAnalysis(mode: AnalysisMode, caseFile: EvidenceCase): Promise<AnalysisResult | null> {
@@ -97,12 +113,61 @@ export function profileArtifact(file: File, onProgress?: (percent: number) => vo
   });
 }
 
-export async function extractArtifactFile(file: File, inode: string, filename: string): Promise<string> {
+export type RecoveredFile = { url: string; blob: Blob; sha256: string; size: number; kind: string };
+
+export type LocalCaseSummary = {
+  case_id: string;
+  artifact_id: string;
+  filename: string;
+  sha256: string;
+  profiled_at: string;
+};
+
+export type AuditEntry = {
+  occurred_at: string;
+  action: string;
+  detail: Record<string, unknown>;
+};
+
+function configuredEndpoint() {
+  return import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
+}
+
+export async function getLocalCases(): Promise<LocalCaseSummary[]> {
+  const endpoint = configuredEndpoint();
+  if (!endpoint) return [];
+  const response = await fetch(`${endpoint}/cases`);
+  if (!response.ok) throw new Error(`Local case archive returned ${response.status}.`);
+  const body = await response.json() as { cases?: LocalCaseSummary[] };
+  return Array.isArray(body.cases) ? body.cases : [];
+}
+
+export async function getLocalCase(caseId: string): Promise<ArtifactProfile> {
+  const endpoint = configuredEndpoint();
+  if (!endpoint) throw new Error("Opening a saved case needs the local ForenSight backend running.");
+  const response = await fetch(`${endpoint}/cases/${encodeURIComponent(caseId)}`);
+  if (!response.ok) throw new Error(`Saved case could not be opened (${response.status}).`);
+  return response.json() as Promise<ArtifactProfile>;
+}
+
+export async function getCaseAudit(caseId: string): Promise<AuditEntry[]> {
+  const endpoint = configuredEndpoint();
+  if (!endpoint) return [];
+  const response = await fetch(`${endpoint}/cases/${encodeURIComponent(caseId)}/audit`);
+  if (!response.ok) throw new Error(`Local audit trail returned ${response.status}.`);
+  const body = await response.json() as { entries?: AuditEntry[] };
+  return Array.isArray(body.entries) ? body.entries : [];
+}
+
+export async function extractArtifactFile(file: File, inode: string, filename: string, caseId?: string, partitionOffset?: string): Promise<RecoveredFile> {
   const endpoint = import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
   if (!endpoint) throw new Error("Extraction needs the local ForenSight backend running.");
   const body = new FormData();
   body.append("file", file); body.append("inode", inode); body.append("filename", filename);
+  if (caseId) body.append("case_id", caseId);
+  if (partitionOffset) body.append("partition_offset", partitionOffset);
   const response = await fetch(`${endpoint}/artifacts/extract`, { method: "POST", body });
   if (!response.ok) throw new Error((await response.json().catch(() => null) as { detail?: string } | null)?.detail ?? "Safe extraction failed.");
-  return URL.createObjectURL(await response.blob());
+  const blob = await response.blob();
+  return { url: URL.createObjectURL(blob), blob, sha256: response.headers.get("x-forensight-sha256") ?? "Not available", size: Number(response.headers.get("x-forensight-size") ?? blob.size), kind: response.headers.get("x-forensight-kind") ?? "Recovered binary" };
 }

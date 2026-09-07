@@ -4,7 +4,26 @@ An evidence-grounded digital-forensics investigation interface. ForenSight recon
 
 ## Run locally
 
-The frontend requires Node.js. The optional local API is designed to run on a Linux machine inside a Python virtual environment.
+For the most reliable demo, start both local services with one command. It keeps artifacts on the investigator machine; only normalized evidence is sent to the optional OpenAI reasoning step.
+
+```powershell
+.\scripts\start-windows.ps1
+```
+
+On Linux:
+
+```bash
+chmod +x scripts/start-linux.sh
+./scripts/start-linux.sh
+```
+
+Before the demo, run this known-good verification after the services start:
+
+```powershell
+.\scripts\verify-demo.ps1
+```
+
+The frontend requires Node.js. The local API runs in a Python virtual environment.
 
 ```powershell
 npm install
@@ -24,9 +43,13 @@ uvicorn app.main:app --reload --port 8000
 
 Then copy `.env.example` to a frontend `.env` file and run `npm run dev`. The initial local API deliberately returns deterministic, evidence-cited analysis. It is useful for a reliable demo before configuring a hosted AI backend. The frontend remains usable with no backend at all.
 
-## Evidence bundle format
+## Evidence inputs
 
-The public MVP accepts normalized `.json` or `.csv` event bundles—not raw `.E01` or `.dd` images. The UI includes a small NIST CFReDS Data-Leakage-Case-inspired demo; it contains no raw image or answer key.
+ForenSight accepts normalized `.json`/`.csv` event bundles and local raw artifacts including E01, EVTX, browser History SQLite, ZIP, PDF, image, MP3, MP4, and PCAP files. It never mounts or executes uploaded evidence.
+
+For an E01, the Windows path uses Sleuth Kit to extract filesystem metadata. It additionally detects embedded Windows Registry hives, MFT, and USN artifacts; when a dedicated parser is unavailable it labels them as **discovered**, not semantically parsed. Embedded Windows EVTX and Chromium/Edge History are read into normalized events when found and readable.
+
+The UI includes a small NIST CFReDS Data-Leakage-Case-inspired demo; it contains no raw image or answer key.
 
 Required event fields: `event_id`, `timestamp`, `event_type`, and `source`.
 
@@ -90,3 +113,9 @@ python -m pip install -r backend/requirements-linux.txt
 ```
 
 The E01 pipeline stays read-only: `libewf` opens the E01 container and `pytsk3` enumerates recoverable filesystem metadata into normalized timeline events. It does not mount or modify the evidence image.
+
+## Evidence grounding and CTF workflow
+
+Every AI result is rejected if it cites an event ID that is not in the submitted case. For each valid citation, the interface now exposes the literal timestamp, source, object, and detail fields that the model was permitted to use.
+
+The CTF Hunt runs a bounded local scan of the first 8 MB for generic `prefix{value}` candidates and strict Base64-decoded candidates. Change the convention in the UI for the competition you are solving. Hits are leads only—not automatically proven flags.
