@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
@@ -44,7 +44,8 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 EventType = Literal[
     "USB_INSERT", "FILE_ACCESS", "FILE_COPY", "USB_REMOVE",
-    "PROCESS_START", "BROWSER_ACTIVITY", "OTHER",
+    "PROCESS_START", "BROWSER_ACTIVITY", "FILE_MODIFIED", "FILE_DELETED",
+    "ARCHIVE_FOUND", "MEDIA_FOUND", "DOCUMENT_FOUND", "EXECUTABLE_FOUND", "OTHER",
 ]
 
 
@@ -141,6 +142,21 @@ def artifact_kind(sample: bytes, filename: str) -> str:
 def printable_strings(sample: bytes, limit: int = 12) -> list[str]:
     values = re.findall(rb"[\x20-\x7e]{6,}", sample)
     return [value.decode("utf-8", "replace")[:160] for value in values[:limit]]
+
+
+def filesystem_event_type(path: str, is_deleted: bool = False) -> str:
+    if is_deleted:
+        return "FILE_DELETED"
+    suffix = Path(path.replace(" (deleted)", "")).suffix.lower()
+    if suffix in {".zip", ".7z", ".rar", ".tar", ".gz", ".bz2"}:
+        return "ARCHIVE_FOUND"
+    if suffix in {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".mp3", ".mp4", ".avi", ".mov", ".wav", ".amr"}:
+        return "MEDIA_FOUND"
+    if suffix in {".txt", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".db", ".csv"}:
+        return "DOCUMENT_FOUND"
+    if suffix in {".exe", ".dll", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".sh"}:
+        return "EXECUTABLE_FOUND"
+    return "FILE_MODIFIED"
 
 
 def inspect_zip(handle: io.BufferedRandom) -> list[str]:
@@ -479,7 +495,7 @@ def extract_e01_filesystem_events(handle: io.BufferedRandom, limit: int = 500) -
                         events.append({
                             "event_id": f"F{len(events) + 1:04d}",
                             "timestamp": timestamp,
-                            "event_type": "OTHER",
+                            "event_type": filesystem_event_type(path),
                             "object": path[:512],
                             "source": f"E01 filesystem: {volume_label}"[:256],
                             "detail": f"Filesystem metadata: size {meta.size:,} bytes; inode {meta.addr}; modified time recovered from image.",
@@ -577,7 +593,7 @@ def extract_e01_with_sleuthkit(handle: io.BufferedRandom, limit: int = 500) -> t
             events.append({
                 "event_id": f"F{len(events) + 1:04d}",
                 "timestamp": datetime.fromtimestamp(int(timestamps[0]), tz=timezone.utc).isoformat(),
-                "event_type": "OTHER",
+                "event_type": filesystem_event_type(name, is_deleted),
                 "object": name[:512],
                 "source": "Sleuth Kit E01 filesystem metadata",
                 "detail": f"Filesystem entry: {fields[3]}; size {fields[6]} bytes; inode {fields[2]}." + (" Deleted entry recovered." if is_deleted else ""),
@@ -782,6 +798,44 @@ def create_case_brief(request: BriefRequest) -> Response:
     except urllib.error.URLError as error:
         raise HTTPException(status_code=502, detail="Could not reach ElevenLabs.") from error
     return Response(content=audio, media_type="audio/mpeg", headers={"cache-control": "no-store"})
+
+
+@app.post("/artifacts/extract")
+async def extract_artifact_file(file: UploadFile = File(...), inode: str = Form(...), filename: str = Form(...)) -> Response:
+    """Recover one selected inode locally; source image and recovered bytes are never uploaded elsewhere."""
+    if not re.fullmatch(r"\d+", inode):
+        raise HTTPException(status_code=400, detail="A numeric filesystem inode is required.")
+    bin_path = sleuthkit_bin()
+    if bin_path is None:
+        raise HTTPException(status_code=503, detail="Local Sleuth Kit tools are unavailable.")
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".E01", delete=False) as temporary:
+        image_path = Path(temporary.name)
+        size = 0
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > int(os.getenv("FORENSIGHT_MAX_ARTIFACT_MB", "512")) * 1024 * 1024:
+                image_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail="Artifact exceeds the local extraction limit.")
+            temporary.write(chunk)
+    try:
+        listing = subprocess.run([str(bin_path / "mmls.exe"), str(image_path)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        offset = None
+        for line in listing.stdout.splitlines():
+            match = re.match(r"^\s*\d+:\s+\d+(?::\d+)?\s+(\d+)\s+\d+\s+\d+\s+(.+)$", line)
+            if match and "unallocated" not in match.group(2).lower() and "reserved" not in match.group(2).lower():
+                offset = match.group(1); break
+        command = [str(bin_path / "icat.exe")]
+        if offset: command.extend(["-o", offset])
+        command.extend([str(image_path), inode])
+        recovered = subprocess.run(command, capture_output=True, timeout=120, check=False).stdout
+        if not recovered:
+            raise HTTPException(status_code=404, detail="The selected inode could not be recovered.")
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).name) or f"inode-{inode}.bin"
+        detected = artifact_kind(recovered[:512 * 1024], safe_name)
+        return Response(content=recovered, media_type="application/octet-stream", headers={"content-disposition": f'attachment; filename="{safe_name}"', "cache-control": "no-store", "x-forensight-sha256": hashlib.sha256(recovered).hexdigest(), "x-forensight-size": str(len(recovered)), "x-forensight-kind": detected[:120]})
+    finally:
+        image_path.unlink(missing_ok=True)
 
 
 @app.post("/artifacts/profile")

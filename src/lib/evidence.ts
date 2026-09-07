@@ -1,4 +1,4 @@
-export type EventType = "USB_INSERT" | "FILE_ACCESS" | "FILE_COPY" | "USB_REMOVE" | "PROCESS_START" | "BROWSER_ACTIVITY" | "OTHER";
+export type EventType = "USB_INSERT" | "FILE_ACCESS" | "FILE_COPY" | "USB_REMOVE" | "PROCESS_START" | "BROWSER_ACTIVITY" | "FILE_MODIFIED" | "FILE_DELETED" | "ARCHIVE_FOUND" | "MEDIA_FOUND" | "DOCUMENT_FOUND" | "EXECUTABLE_FOUND" | "OTHER";
 
 export type EvidenceEvent = {
   event_id: string;
@@ -18,7 +18,7 @@ export type EvidenceCase = {
   events: EvidenceEvent[];
 };
 
-const eventTypes: EventType[] = ["USB_INSERT", "FILE_ACCESS", "FILE_COPY", "USB_REMOVE", "PROCESS_START", "BROWSER_ACTIVITY", "OTHER"];
+const eventTypes: EventType[] = ["USB_INSERT", "FILE_ACCESS", "FILE_COPY", "USB_REMOVE", "PROCESS_START", "BROWSER_ACTIVITY", "FILE_MODIFIED", "FILE_DELETED", "ARCHIVE_FOUND", "MEDIA_FOUND", "DOCUMENT_FOUND", "EXECUTABLE_FOUND", "OTHER"];
 
 export function validateCase(value: unknown): EvidenceCase {
   if (!value || typeof value !== "object") throw new Error("The upload must be a JSON object.");

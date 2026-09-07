@@ -96,3 +96,13 @@ export function profileArtifact(file: File, onProgress?: (percent: number) => vo
     request.send(body);
   });
 }
+
+export async function extractArtifactFile(file: File, inode: string, filename: string): Promise<string> {
+  const endpoint = import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
+  if (!endpoint) throw new Error("Extraction needs the local ForenSight backend running.");
+  const body = new FormData();
+  body.append("file", file); body.append("inode", inode); body.append("filename", filename);
+  const response = await fetch(`${endpoint}/artifacts/extract`, { method: "POST", body });
+  if (!response.ok) throw new Error((await response.json().catch(() => null) as { detail?: string } | null)?.detail ?? "Safe extraction failed.");
+  return URL.createObjectURL(await response.blob());
+}

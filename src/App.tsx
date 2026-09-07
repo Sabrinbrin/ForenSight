@@ -1,13 +1,14 @@
 import { useMemo, useRef, useState } from "react";
 import { demoCase } from "./data/demoCase";
 import { parseCsv, validateCase, type EvidenceCase, type EvidenceEvent } from "./lib/evidence";
-import { profileArtifact, requestAnalysis, requestNarration, type AnalysisResult, type AnalysisMode, type ArtifactProfile } from "./lib/api";
+import { extractArtifactFile, profileArtifact, requestAnalysis, requestNarration, type AnalysisResult, type AnalysisMode, type ArtifactProfile } from "./lib/api";
 
 const eventLabels: Record<EvidenceEvent["event_type"], string> = {
-  USB_INSERT: "USB connected", FILE_ACCESS: "File accessed", FILE_COPY: "File copied", USB_REMOVE: "USB removed", PROCESS_START: "Process started", BROWSER_ACTIVITY: "Browser activity", OTHER: "Evidence note",
+  USB_INSERT: "USB connected", FILE_ACCESS: "File accessed", FILE_COPY: "File copied", USB_REMOVE: "USB removed", PROCESS_START: "Process started", BROWSER_ACTIVITY: "Browser activity", FILE_MODIFIED: "File metadata", FILE_DELETED: "Deleted file recovered", ARCHIVE_FOUND: "Archive found", MEDIA_FOUND: "Media found", DOCUMENT_FOUND: "Document found", EXECUTABLE_FOUND: "Executable or script found", OTHER: "Evidence note",
 };
 
 function time(event: EvidenceEvent) { return new Date(event.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+function detailValue(detail: string | undefined, pattern: RegExp) { return detail?.match(pattern)?.[1] ?? "Not recovered"; }
 
 export default function App() {
   const [caseFile, setCaseFile] = useState<EvidenceCase>(demoCase);
@@ -23,9 +24,22 @@ export default function App() {
   const [evidenceUploaded, setEvidenceUploaded] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"ALL" | EvidenceEvent["event_type"]>("ALL");
+  const [deletedOnly, setDeletedOnly] = useState(false);
+  const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<Set<string>>(new Set());
+  const [artifactFile, setArtifactFile] = useState<File | null>(null);
   const [artifactProfile, setArtifactProfile] = useState<ArtifactProfile | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const events = useMemo(() => [...caseFile.events].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), [caseFile]);
+  const visibleEvents = useMemo(() => events.filter((event) => {
+    const matchesType = typeFilter === "ALL" || event.event_type === typeFilter;
+    const matchesDeleted = !deletedOnly || event.event_type === "FILE_DELETED";
+    const text = `${event.object ?? ""} ${event.detail ?? ""} ${event.source}`.toLowerCase();
+    return matchesType && matchesDeleted && (!query || text.includes(query.toLowerCase()));
+  }), [events, typeFilter, deletedOnly, query]);
+  const triage = useMemo(() => ({ deleted: events.filter((event) => event.event_type === "FILE_DELETED").length, archives: events.filter((event) => event.event_type === "ARCHIVE_FOUND").length, executables: events.filter((event) => event.event_type === "EXECUTABLE_FOUND").length, documents: events.filter((event) => event.event_type === "DOCUMENT_FOUND").length }), [events]);
+  const analysisEvents = selectedEvidenceIds.size ? events.filter((event) => selectedEvidenceIds.has(event.event_id)) : visibleEvents;
   const directEvidence = events.filter((event) => event.event_type === "USB_INSERT" || event.event_type === "FILE_ACCESS" || event.event_type === "FILE_COPY" || event.event_type === "USB_REMOVE");
   const hasCurrentAnalysis = analysis?.mode === mode;
   const containerOnly = artifactProfile?.kind === "E01 forensic image" && events.length <= 1;
@@ -45,10 +59,12 @@ export default function App() {
     }
     setReviewStarted(true); setMode(next); setAnalyzing(true);
     try {
-      const result = await requestAnalysis(next, caseFile);
+      if (!analysisEvents.length) throw new Error("Select or filter at least one evidence event before reviewing.");
+      const scopedCase = { ...caseFile, title: `${caseFile.title} (${analysisEvents.length} selected event${analysisEvents.length === 1 ? "" : "s"})`, events: analysisEvents };
+      const result = await requestAnalysis(next, scopedCase);
       if (result) {
         setAnalysis(result);
-        setMessage(`${next === "challenge" ? "Challenge" : "Investigation"} analysis complete (${result.generated_by}). Every cited ID was validated.`);
+        setMessage(`${next === "challenge" ? "Challenge" : "Investigation"} complete for ${analysisEvents.length} event${analysisEvents.length === 1 ? "" : "s"} (${result.generated_by}). Every cited ID was validated.`);
       } else {
         setAnalysis(null);
         setMessage("Deterministic demo mode. Set VITE_ANALYSIS_API_URL to use the local analysis service.");
@@ -57,6 +73,25 @@ export default function App() {
       setAnalysis(null);
       setMessage(error instanceof Error ? error.message : "Analysis request failed.");
     } finally { setAnalyzing(false); }
+  }
+
+  function exportReport() {
+    const reportEvents = analysisEvents.length ? analysisEvents : events;
+    const content = [`# ForenSight case report`, ``, `## Case`, `- Title: ${caseFile.title}`, `- Case ID: ${caseFile.case_id}`, artifactProfile ? `- Artifact: ${artifactProfile.filename}` : "", artifactProfile ? `- SHA-256: ${artifactProfile.sha256}` : "", `- Exported: ${new Date().toISOString()}`, ``, `## Investigation finding`, `- ${hypothesis}`, `- Confidence: ${confidence}%`, analysis ? `- Engine: ${analysis.generated_by}` : "", ``, `## Evidence scope (${reportEvents.length} events)`, ...reportEvents.map((event) => `- ${event.event_id} | ${event.timestamp} | ${eventLabels[event.event_type]} | ${event.object ?? event.source}`), ``, `## Gaps / next inspection`, `- ${analysis?.missing_evidence[0] ?? "No automated gap assessment has been generated yet."}`].filter(Boolean).join("\n");
+    const url = URL.createObjectURL(new Blob([content], { type: "text/markdown" }));
+    const link = document.createElement("a"); link.href = url; link.download = `${caseFile.case_id}-forensight-report.md`; link.click(); URL.revokeObjectURL(url);
+    setMessage("Local case report downloaded. No evidence files were exported or uploaded.");
+  }
+
+  async function copySelectedPath() {
+    if (!selected.object) return;
+    await navigator.clipboard?.writeText(selected.object);
+    setMessage("Selected evidence path copied locally.");
+  }
+  async function extractSelectedFile() {
+    const inode = detailValue(selected.detail, /inode ([^.]+)/);
+    if (!artifactFile || inode === "Not recovered" || !selected.object) { setMessage("Select a recovered filesystem entry from an uploaded E01."); return; }
+    try { const url = await extractArtifactFile(artifactFile, inode, selected.object); const link = document.createElement("a"); link.href = url; link.download = selected.object.split("/").pop() || `inode-${inode}.bin`; link.click(); URL.revokeObjectURL(url); setMessage("Recovered copy downloaded locally. The source E01 was not modified."); } catch (error) { setMessage(error instanceof Error ? error.message : "Safe extraction failed."); }
   }
 
   async function playBrief() {
@@ -102,7 +137,7 @@ export default function App() {
       setUploadProgress(100);
       setMessage("Evidence received. Building the local timeline…");
       const next = file.name.toLowerCase().endsWith(".csv") ? parseCsv(raw) : file.name.toLowerCase().endsWith(".json") ? validateCase(JSON.parse(raw)) : validateCase(profile!.case);
-      setCaseFile(next); setSelected(next.events[0]); setMode("investigate"); setAnalysis(null); setReviewStarted(false); setEvidenceUploaded(true);
+      setCaseFile(next); setSelected(next.events[0]); setMode("investigate"); setAnalysis(null); setReviewStarted(false); setEvidenceUploaded(true); setQuery(""); setTypeFilter("ALL"); setDeletedOnly(false); setSelectedEvidenceIds(new Set()); setArtifactFile(structuredEvidence ? null : file);
       setArtifactProfile(profile);
       setMessage(profile ? `${profile.kind} profiled locally. Press Start reviewing when you are ready.` : `${next.events.length} events loaded. Press Start reviewing when you are ready.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to parse this evidence bundle."); }
@@ -113,12 +148,11 @@ export default function App() {
     <header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark">F</span> FORENSIGHT</a>
       <div className="case-chip"><span className="pulse" /> {evidenceUploaded ? caseFile.case_id : "NO EVIDENCE LOADED"}</div>
-      <button className="upload" onClick={() => input.current?.click()} disabled={uploading}>{uploading ? "Uploading…" : evidenceUploaded ? "New evidence" : "Upload evidence"}</button>
       <input ref={input} type="file" accept="*/*" onChange={(event) => upload(event.target.files?.[0])} disabled={uploading} hidden />
     </header>
 
     <section className="hero" id="top">
-      <div className="hero-copy"><p className="eyebrow">FORENSIGHT CASE REVIEW</p><h1>Understand your<br /><em>evidence clearly.</em></h1><p className="lede">Upload a timeline of device and file activity. ForenSight puts it in order, explains what it may mean, and shows what is still uncertain.</p><div className="hero-actions"><button className="primary-action" onClick={() => evidenceUploaded ? chooseMode("investigate") : input.current?.click()} disabled={analyzing || uploading}>{analyzing ? "Looking at evidence…" : evidenceUploaded ? "Start reviewing" : "Upload evidence"}</button>{evidenceUploaded && <button className="quiet-action" onClick={() => input.current?.click()} disabled={uploading}>Replace evidence</button>}{reviewStarted && <button className="quiet-action" onClick={playBrief} disabled={narrating}>{narrating ? "Preparing brief…" : "Hear the summary"}</button>}</div></div>
+      <div className="hero-copy"><p className="eyebrow">FORENSIGHT CASE REVIEW</p><h1>Understand your<br /><em>evidence clearly.</em></h1><p className="lede">Upload a timeline of device and file activity. ForenSight puts it in order, explains what it may mean, and shows what is still uncertain.</p><div className="hero-actions"><button className="primary-action" onClick={() => evidenceUploaded ? chooseMode("investigate") : input.current?.click()} disabled={analyzing || uploading}>{analyzing ? "Looking at evidence…" : evidenceUploaded ? selectedEvidenceIds.size ? `Review ${selectedEvidenceIds.size} selected` : `Review ${analysisEvents.length} visible` : "Upload evidence"}</button>{evidenceUploaded && <button className="quiet-action" onClick={() => input.current?.click()} disabled={uploading}>Replace evidence</button>}{evidenceUploaded && <button className="quiet-action" onClick={exportReport}>Export report</button>}{reviewStarted && <button className="quiet-action" onClick={playBrief} disabled={narrating}>{narrating ? "Preparing brief…" : "Hear the summary"}</button>}</div></div>
       <div className="hero-status">{evidenceUploaded ? <><span>READY TO REVIEW</span><strong>Your evidence is loaded</strong><p>{events.length} events are ready. Start reviewing to see the timeline and conclusions.</p><div><b>{events.length}</b><small>events ready</small></div></> : <><span>HOW IT WORKS</span><strong>Start with your evidence</strong><p>Upload an artifact or a JSON/CSV timeline to begin a private local review.</p><div><b>01</b><small>upload evidence</small></div></>}</div>
     </section>
 
@@ -131,6 +165,8 @@ export default function App() {
     {evidenceUploaded && <section className="fact-strip" aria-label="Case facts">
       <div><span>EVENTS REVIEWED</span><strong>{events.length}</strong></div><div><span>ARTIFACT SOURCES</span><strong>{new Set(events.map((event) => event.source)).size}</strong></div><div><span>TIME WINDOW</span><strong>{time(events[0])}—{time(events.at(-1)!)}</strong></div><div><span>STATUS</span><strong className="status-text">Open review</strong></div>
     </section>}
+
+    {evidenceUploaded && <section className="triage" aria-label="Evidence triage"><div className="triage-heading"><div><p className="panel-label">INVESTIGATOR TRIAGE</p><h2>Start with the highest-value evidence</h2></div><button onClick={() => { setQuery(""); setTypeFilter("ALL"); setDeletedOnly(false); }}>Clear filters</button></div><div className="triage-cards"><button onClick={() => { setDeletedOnly(true); setTypeFilter("ALL"); }}><b>{triage.deleted}</b><span>deleted files</span></button><button onClick={() => { setDeletedOnly(false); setTypeFilter("ARCHIVE_FOUND"); }}><b>{triage.archives}</b><span>archives</span></button><button onClick={() => { setDeletedOnly(false); setTypeFilter("EXECUTABLE_FOUND"); }}><b>{triage.executables}</b><span>scripts / executables</span></button><button onClick={() => { setDeletedOnly(false); setTypeFilter("DOCUMENT_FOUND"); }}><b>{triage.documents}</b><span>documents</span></button></div><div className="triage-controls"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search paths, names, or metadata" /><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as "ALL" | EvidenceEvent["event_type"])}><option value="ALL">All event types</option>{Array.from(new Set(events.map((event) => event.event_type))).map((type) => <option key={type} value={type}>{eventLabels[type]}</option>)}</select><label><input type="checkbox" checked={deletedOnly} onChange={(event) => setDeletedOnly(event.target.checked)} /> Deleted only</label><strong>{visibleEvents.length} of {events.length} shown</strong></div></section>}
 
     {artifactProfile && <><section className="artifact-profile" aria-label="Local artifact profile"><div><p className="panel-label">LOCAL ARTIFACT PROFILE</p><h2>{artifactProfile.filename}</h2><p>{artifactProfile.kind} · {(artifactProfile.size_bytes / 1024).toFixed(1)} KB</p></div><div><span>SHA-256</span><code>{artifactProfile.sha256}</code></div><ul>{artifactProfile.signals.slice(0, 3).map((signal) => <li key={signal}>{signal}</li>)}</ul></section><section className="artifact-findings" aria-label="Artifact findings"><div><p className="panel-label">POSSIBLE TAMPER SIGNALS</p><strong>{artifactProfile.tamper_signals.length ? "Review recommended" : "No structural signals found"}</strong><p>{artifactProfile.tamper_signals[0] ?? "This does not prove the artifact is original; it means this quick local profile found no structural warning."}</p></div>{artifactProfile.strings.length > 0 && <div><p className="panel-label">CTF / EXTRACTED STRINGS</p><code>{artifactProfile.strings.slice(0, 3).join(" · ")}</code></div>}<div><p className="panel-label">CHAIN OF CUSTODY</p><code>{artifactProfile.parser_version} · profiled locally {new Date(artifactProfile.profiled_at).toLocaleString()}</code></div></section></>}
     {artifactProfile?.kind === "E01 forensic image" && artifactProfile.case.events.length <= 1 && <section className="extraction-notice"><p className="panel-label">E01 EXTRACTION STATUS</p><h2>This is a verified image, not an extracted timeline yet.</h2><p>Windows has validated the E01 container and calculated its hash. The actual file and timestamp timeline will appear only after running the Linux filesystem extractor with <code>backend/requirements-linux.txt</code>.</p></section>}
@@ -156,16 +192,16 @@ export default function App() {
       </aside>
 
       <section className="timeline panel"><div className="panel-heading"><div><p className="panel-label">WHAT HAPPENED, IN ORDER</p><h2>Evidence timeline</h2></div><span>{events.length} events</span></div><p className="timeline-hint">All recovered events are shown below — scroll this panel to browse them.</p>
-        <ol>{events.map((event) => <li key={event.event_id}><button className={selected.event_id === event.event_id ? "event active" : "event"} onClick={() => setSelected(event)}><time>{time(event)}</time><i className={event.event_type.toLowerCase()} /> <span><strong>{eventLabels[event.event_type]}</strong><small>{event.object ?? event.device ?? event.source}</small></span><code>{event.event_id}</code></button></li>)}</ol>
+        <ol>{visibleEvents.map((event) => <li key={event.event_id}><label className="event-select"><input type="checkbox" checked={selectedEvidenceIds.has(event.event_id)} onChange={() => setSelectedEvidenceIds((current) => { const next = new Set(current); next.has(event.event_id) ? next.delete(event.event_id) : next.add(event.event_id); return next; })} /><span className="sr-only">Select {event.event_id}</span></label><button className={selected.event_id === event.event_id ? "event active" : "event"} onClick={() => setSelected(event)}><time>{time(event)}</time><i className={event.event_type.toLowerCase()} /> <span><strong>{eventLabels[event.event_type]}</strong><small>{event.object ?? event.device ?? event.source}</small></span><code>{event.event_id}</code></button></li>)}{visibleEvents.length === 0 && <li className="empty-events">No events match these filters.</li>}</ol>
       </section>
 
-      <aside className="why panel"><p className="panel-label">ABOUT THIS EVENT</p><h2>{eventLabels[selected.event_type]}</h2><p className="event-detail">{selected.detail ?? "No further detail supplied."}</p><dl><div><dt>Evidence reference</dt><dd>{selected.event_id}</dd></div><div><dt>Where it came from</dt><dd>{selected.source}</dd></div><div><dt>When it happened</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div></dl>
+      <aside className="why panel"><p className="panel-label">ABOUT THIS EVENT</p><h2>{eventLabels[selected.event_type]}</h2><p className="event-detail">{selected.detail ?? "No further detail supplied."}</p><dl><div><dt>Evidence reference</dt><dd>{selected.event_id}</dd></div><div><dt>Where it came from</dt><dd>{selected.source}</dd></div><div><dt>When it happened</dt><dd>{new Date(selected.timestamp).toLocaleString()}</dd></div></dl>{selected.object && <section className="file-inspector"><p className="panel-label">SELECTED FILE INSPECTION</p><code>{selected.object}</code><dl><div><dt>Classification</dt><dd>{eventLabels[selected.event_type]}</dd></div><div><dt>Deletion state</dt><dd>{selected.event_type === "FILE_DELETED" ? "Recovered deleted entry" : "No deletion state recovered"}</dd></div><div><dt>Filesystem size</dt><dd>{detailValue(selected.detail, /size ([^;]+) bytes/)} bytes</dd></div><div><dt>Inode</dt><dd>{detailValue(selected.detail, /inode ([^.]+)/)}</dd></div></dl><button onClick={copySelectedPath}>Copy evidence path</button>{artifactFile && <button onClick={extractSelectedFile}>Extract safe copy</button>}<small>Metadata only. The original image remains read-only.</small></section>}
         <div className="evidence-chain"><p className="panel-label">RELATED EVENTS</p>{directEvidence.map((event) => <button key={event.event_id} onClick={() => setSelected(event)}>↳ {event.event_id} — {eventLabels[event.event_type]}</button>)}</div>
       </aside>
     </section>
 
     <section className="bottom-grid">
-      <section className="panel graph"><div className="panel-heading"><div><p className="panel-label">THE EVIDENCE STORY</p><h2>How these events connect</h2></div><span>Based on the timeline</span></div><div className="graph-flow"><span>{events.find((event) => event.actor)?.actor ?? "Known user"}</span><b>opened</b><span>{events.find((event) => event.object)?.object ?? "Document"}</span><b>then used</b><span className="device">{events.find((event) => event.device)?.device ?? "USB device"}</span></div><p>Each part links back to an event in the timeline above.</p></section>
+      <section className="panel graph"><div className="panel-heading"><div><p className="panel-label">SELECTED EVIDENCE PATH</p><h2>What this record establishes</h2></div><span>Artifact-backed</span></div><div className="graph-flow"><span>{selected.source}</span><b>recorded</b><span>{selected.object ?? "filesystem entry"}</span><b>as</b><span className="device">{eventLabels[selected.event_type]}</span></div><p>Only relationships present in the selected evidence are shown.</p></section>
       <section className="panel gaps"><p className="panel-label">{mode === "challenge" ? "WHAT ELSE COULD BE TRUE?" : "WHAT WE STILL NEED TO KNOW"}</p>{mode === "challenge" ? <><h2>{analysis?.alternative_explanations[0] ? "Another explanation is possible" : "Check the conclusion"}</h2><p>{analysis?.alternative_explanations[0] ?? "USB metadata is incomplete, so the file could have been present before this session."}</p><code>{analysis?.contradicting_evidence[0] ?? "E227"}</code></> : <><h2>One important gap remains</h2><p>{analysis?.missing_evidence[0] ?? "We do not have a process record showing exactly which app copied the file."}</p><code>Missing evidence</code></>}</section>
     </section>
     </div>}
