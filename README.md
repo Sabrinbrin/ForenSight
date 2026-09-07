@@ -80,3 +80,13 @@ The browser requests audio from the local backend; the ElevenLabs key is never s
 ## Optional VirusTotal hash enrichment
 
 The local backend exposes `POST /enrich/virustotal` for a **SHA-256 hash only**. It never uploads a file or a disk image to VirusTotal. Add `VIRUSTOTAL_API_KEY` to `backend/.env`; results are marked as external intelligence and should support, never replace, artifact evidence. VirusTotal identifies file objects by SHA-256 and provides the latest analysis statistics for known files. [VirusTotal file API documentation](https://docs.virustotal.com/reference/files)
+
+## Linux E01 filesystem timeline
+
+The default requirements keep Windows profiling lightweight. For a local Linux investigator environment that needs E01 filesystem timeline extraction, install the extra reader before starting the backend:
+
+```bash
+python -m pip install -r backend/requirements-linux.txt
+```
+
+The E01 pipeline stays read-only: `libewf` opens the E01 container and `pytsk3` enumerates recoverable filesystem metadata into normalized timeline events. It does not mount or modify the evidence image.

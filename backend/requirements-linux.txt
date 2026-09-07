@@ -1,0 +1,3 @@
+-r requirements.txt
+# Linux-only filesystem reader for E01 → partition → NTFS/FAT/ext timeline extraction.
+pytsk3==20250312

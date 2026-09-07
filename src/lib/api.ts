@@ -1,5 +1,19 @@
 import type { EvidenceCase } from "./evidence";
 
+export type ArtifactProfile = {
+  artifact_id: string;
+  filename: string;
+  kind: string;
+  size_bytes: number;
+  sha256: string;
+  profiled_at: string;
+  parser_version: string;
+  signals: string[];
+  tamper_signals: string[];
+  strings: string[];
+  case: EvidenceCase;
+};
+
 export type AnalysisMode = "investigate" | "challenge";
 
 export type AnalysisResult = {
@@ -55,4 +69,30 @@ export async function requestNarration(mode: AnalysisMode, caseFile: EvidenceCas
   }
   if (!response.headers.get("content-type")?.includes("audio")) throw new Error("Narration service did not return audio.");
   return URL.createObjectURL(await response.blob());
+}
+
+export function profileArtifact(file: File, onProgress?: (percent: number) => void): Promise<ArtifactProfile> {
+  const endpoint = import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
+  if (!endpoint) return Promise.reject(new Error("Artifact profiling needs the local ForenSight backend running."));
+  const body = new FormData();
+  body.append("file", file);
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${endpoint}/artifacts/profile`);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.min(95, Math.round((event.loaded / event.total) * 100)));
+    };
+    request.onerror = () => reject(new Error("Artifact profiler could not be reached."));
+    request.onload = () => {
+      let response: ArtifactProfile | { detail?: string } | null = null;
+      try { response = JSON.parse(request.responseText) as ArtifactProfile | { detail?: string }; } catch { /* handled below */ }
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error((response as { detail?: string } | null)?.detail ?? `Artifact profiler returned ${request.status}.`));
+        return;
+      }
+      onProgress?.(100);
+      resolve(response as ArtifactProfile);
+    };
+    request.send(body);
+  });
 }

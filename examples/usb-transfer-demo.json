@@ -1,0 +1,61 @@
+{
+  "case_id": "example-usb-transfer-001",
+  "title": "Example: removable-media review",
+  "description": "Synthetic example evidence bundle for demonstrating ForenSight. It is not a real incident.",
+  "events": [
+    {
+      "event_id": "E001",
+      "timestamp": "2026-09-07T14:02:11Z",
+      "event_type": "PROCESS_START",
+      "actor": "alex",
+      "object": "explorer.exe",
+      "source": "Windows Prefetch",
+      "detail": "Interactive Windows session activity recorded."
+    },
+    {
+      "event_id": "E002",
+      "timestamp": "2026-09-07T14:07:02Z",
+      "event_type": "USB_INSERT",
+      "actor": "alex",
+      "device": "USB-E: (Kingston DataTraveler)",
+      "source": "Windows Registry",
+      "detail": "Removable device attachment recorded."
+    },
+    {
+      "event_id": "E003",
+      "timestamp": "2026-09-07T14:08:11Z",
+      "event_type": "FILE_ACCESS",
+      "actor": "alex",
+      "object": "financial_report.xlsx",
+      "source": "LNK / RecentDocs",
+      "detail": "Sensitive document opened during the active session."
+    },
+    {
+      "event_id": "E004",
+      "timestamp": "2026-09-07T14:08:31Z",
+      "event_type": "FILE_COPY",
+      "actor": "alex",
+      "object": "financial_report.xlsx",
+      "device": "USB-E: (Kingston DataTraveler)",
+      "source": "NTFS transaction log",
+      "detail": "Filesystem activity associates the document with removable media."
+    },
+    {
+      "event_id": "E005",
+      "timestamp": "2026-09-07T14:10:04Z",
+      "event_type": "USB_REMOVE",
+      "actor": "alex",
+      "device": "USB-E: (Kingston DataTraveler)",
+      "source": "Windows Event Log",
+      "detail": "Removable device removal recorded."
+    },
+    {
+      "event_id": "E006",
+      "timestamp": "2026-09-07T14:11:21Z",
+      "event_type": "OTHER",
+      "object": "USB-E: (Kingston DataTraveler)",
+      "source": "USB filesystem review",
+      "detail": "Prior-session metadata is incomplete; earlier file presence cannot be ruled out."
+    }
+  ]
+}
