@@ -42,6 +42,23 @@ export type EvidenceBasis = {
   detail?: string | null;
 };
 
+const defaultLocalEndpoint = "http://127.0.0.1:8000";
+
+function configuredEndpoint() {
+  return (import.meta.env.VITE_ANALYSIS_API_URL ?? defaultLocalEndpoint).replace(/\/$/, "");
+}
+
+export async function getBackendStatus(): Promise<boolean> {
+  try {
+    const response = await fetch(`${configuredEndpoint()}/health`);
+    if (!response.ok) return false;
+    const body = await response.json() as { status?: string };
+    return body.status === "ok";
+  } catch {
+    return false;
+  }
+}
+
 function validResult(value: unknown, evidenceIds: Set<string>): value is AnalysisResult {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<AnalysisResult>;
@@ -57,8 +74,7 @@ function validResult(value: unknown, evidenceIds: Set<string>): value is Analysi
 }
 
 export async function requestAnalysis(mode: AnalysisMode, caseFile: EvidenceCase): Promise<AnalysisResult | null> {
-  const endpoint = import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
-  if (!endpoint) return null;
+  const endpoint = configuredEndpoint();
   const response = await fetch(`${endpoint}/analyze/${mode}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -72,8 +88,7 @@ export async function requestAnalysis(mode: AnalysisMode, caseFile: EvidenceCase
 }
 
 export async function requestNarration(mode: AnalysisMode, caseFile: EvidenceCase): Promise<string> {
-  const endpoint = import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
-  if (!endpoint) throw new Error("Narration needs a configured analysis API.");
+  const endpoint = configuredEndpoint();
   const response = await fetch(`${endpoint}/audio/brief`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -88,8 +103,7 @@ export async function requestNarration(mode: AnalysisMode, caseFile: EvidenceCas
 }
 
 export function profileArtifact(file: File, onProgress?: (percent: number) => void): Promise<ArtifactProfile> {
-  const endpoint = import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
-  if (!endpoint) return Promise.reject(new Error("Artifact profiling needs the local ForenSight backend running."));
+  const endpoint = configuredEndpoint();
   const body = new FormData();
   body.append("file", file);
   return new Promise((resolve, reject) => {
@@ -129,10 +143,6 @@ export type AuditEntry = {
   detail: Record<string, unknown>;
 };
 
-function configuredEndpoint() {
-  return import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
-}
-
 export async function getLocalCases(): Promise<LocalCaseSummary[]> {
   const endpoint = configuredEndpoint();
   if (!endpoint) return [];
@@ -160,8 +170,7 @@ export async function getCaseAudit(caseId: string): Promise<AuditEntry[]> {
 }
 
 export async function extractArtifactFile(file: File, inode: string, filename: string, caseId?: string, partitionOffset?: string): Promise<RecoveredFile> {
-  const endpoint = import.meta.env.VITE_ANALYSIS_API_URL?.replace(/\/$/, "");
-  if (!endpoint) throw new Error("Extraction needs the local ForenSight backend running.");
+  const endpoint = configuredEndpoint();
   const body = new FormData();
   body.append("file", file); body.append("inode", inode); body.append("filename", filename);
   if (caseId) body.append("case_id", caseId);

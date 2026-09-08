@@ -1,7 +1,8 @@
-"""Small Linux-friendly API for the ForenSight demo.
+"""Local forensic-analysis API for the ForenSight demo.
 
-This service intentionally accepts only normalized event bundles. It never
-opens, mounts, or executes files from raw E01/DD images.
+Raw artifacts are processed locally in read-only temporary files to derive
+normalized metadata or recover a selected safe copy. They are never mounted,
+executed, stored in the case database, or sent to the reasoning service.
 """
 from __future__ import annotations
 
@@ -18,12 +19,30 @@ import zipfile
 import xml.etree.ElementTree as ElementTree
 from collections import Counter
 from tempfile import SpooledTemporaryFile
-from mutagen import File as MutagenFile
-from Evtx.Evtx import Evtx
-from PIL import Image
-from pypdf import PdfReader
-import dpkt
-import pyewf
+try:
+    from mutagen import File as MutagenFile
+except ImportError:
+    MutagenFile = None
+try:
+    from Evtx.Evtx import Evtx
+except ImportError:
+    Evtx = None
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+try:
+    import dpkt
+except ImportError:
+    dpkt = None
+try:
+    import pyewf
+except ImportError:
+    pyewf = None
 
 try:
     import pytsk3
@@ -379,6 +398,8 @@ def extract_chromium_history(handle: io.BufferedRandom, limit: int = 100) -> lis
 
 def extract_evtx_events(handle: io.BufferedRandom, limit: int = 250) -> list[dict]:
     """Extract a small, read-only event timeline from Windows EVTX XML records."""
+    if Evtx is None:
+        return []
     import tempfile
     handle.seek(0)
     with tempfile.NamedTemporaryFile(suffix=".evtx", delete=False) as temporary:
@@ -451,6 +472,8 @@ def inspect_mp3(sample: bytes) -> list[str]:
 
 def inspect_media_metadata(handle: io.BufferedRandom, suffix: str) -> list[str]:
     """Read media metadata without decoding or executing the media."""
+    if MutagenFile is None:
+        return ["Media signature detected, but the optional Mutagen parser is not installed locally."]
     import tempfile
     handle.seek(0)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temporary:
@@ -480,6 +503,8 @@ def inspect_media_metadata(handle: io.BufferedRandom, suffix: str) -> list[str]:
 
 
 def inspect_image_metadata(handle: io.BufferedRandom, suffix: str) -> list[str]:
+    if Image is None:
+        return ["Image signature detected, but the optional Pillow parser is not installed locally."]
     import tempfile
     handle.seek(0)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temporary:
@@ -501,6 +526,8 @@ def inspect_image_metadata(handle: io.BufferedRandom, suffix: str) -> list[str]:
 
 
 def inspect_pdf_metadata(handle: io.BufferedRandom) -> list[str]:
+    if PdfReader is None:
+        return ["PDF signature detected, but the optional pypdf parser is not installed locally."]
     import tempfile
     handle.seek(0)
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temporary:
@@ -521,6 +548,8 @@ def inspect_pdf_metadata(handle: io.BufferedRandom) -> list[str]:
 
 
 def inspect_pcap(handle: io.BufferedRandom, limit: int = 5000) -> list[str]:
+    if dpkt is None:
+        return ["PCAP signature detected, but the optional dpkt parser is not installed locally."]
     import tempfile
     handle.seek(0)
     with tempfile.NamedTemporaryFile(suffix=".pcap", delete=False) as temporary:
@@ -539,6 +568,8 @@ def inspect_pcap(handle: io.BufferedRandom, limit: int = 5000) -> list[str]:
 
 def inspect_e01(handle: io.BufferedRandom) -> list[str]:
     """Validate and open an E01 container locally using libewf in read-only mode."""
+    if pyewf is None:
+        return ["E01 container signature detected, but the optional libewf reader is not installed locally."]
     import tempfile
     handle.seek(0)
     with tempfile.NamedTemporaryFile(suffix=".E01", delete=False) as temporary:
@@ -564,8 +595,8 @@ def extract_e01_filesystem_events(handle: io.BufferedRandom, limit: int = 500) -
     windows_events, windows_notes = extract_e01_with_sleuthkit(handle, limit)
     if windows_events or windows_notes:
         return windows_events, windows_notes
-    if pytsk3 is None:
-        return [], ["Filesystem extraction is ready for Linux but pytsk3 is not installed in this environment."]
+    if pytsk3 is None or pyewf is None:
+        return [], ["Filesystem extraction needs pytsk3 and libewf when the local Sleuth Kit path is unavailable."]
     import tempfile
     handle.seek(0)
     with tempfile.NamedTemporaryFile(suffix=".E01", delete=False) as temporary:
@@ -1166,8 +1197,8 @@ async def extract_artifact_file(
     file: UploadFile = File(...), inode: str = Form(...), filename: str = Form(...), case_id: str | None = Form(default=None), partition_offset: str | None = Form(default=None),
 ) -> Response:
     """Recover one selected inode locally; source image and recovered bytes are never uploaded elsewhere."""
-    if not re.fullmatch(r"\d+", inode):
-        raise HTTPException(status_code=400, detail="A numeric filesystem inode is required.")
+    if not re.fullmatch(r"\d+(?:-\d+)*", inode):
+        raise HTTPException(status_code=400, detail="A filesystem inode must be numeric or Sleuth Kit's numeric dash form.")
     if partition_offset is not None and not re.fullmatch(r"\d+", partition_offset):
         raise HTTPException(status_code=400, detail="The partition offset must be numeric when supplied.")
     bin_path = sleuthkit_bin()
