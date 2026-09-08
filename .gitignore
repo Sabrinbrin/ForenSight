@@ -1,5 +1,20 @@
 # Prerequisites
 *.d
+node_modules/
+dist/
+.venv/
+backend/.venv/
+.env
+.env.*
+!.env.example
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Object files
 *.o
@@ -53,3 +68,4 @@ dkms.conf
 
 # debug information files
 *.dwo
+evidence/

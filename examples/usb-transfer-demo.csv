@@ -1,0 +1,7 @@
+event_id,timestamp,event_type,actor,object,device,source,detail
+E001,2026-09-07T14:02:11Z,PROCESS_START,alex,explorer.exe,,Windows Prefetch,Interactive Windows session activity recorded
+E002,2026-09-07T14:07:02Z,USB_INSERT,alex,,USB-E (Kingston DataTraveler),Windows Registry,Removable device attachment recorded
+E003,2026-09-07T14:08:11Z,FILE_ACCESS,alex,financial_report.xlsx,,LNK RecentDocs,Sensitive document opened during the active session
+E004,2026-09-07T14:08:31Z,FILE_COPY,alex,financial_report.xlsx,USB-E (Kingston DataTraveler),NTFS transaction log,Filesystem activity associates the document with removable media
+E005,2026-09-07T14:10:04Z,USB_REMOVE,alex,,USB-E (Kingston DataTraveler),Windows Event Log,Removable device removal recorded
+E006,2026-09-07T14:11:21Z,OTHER,,USB-E (Kingston DataTraveler),,USB filesystem review,Prior-session metadata is incomplete
